@@ -14,7 +14,7 @@ const routeRoutes = require("./routes/routeRoutes");
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 // ================= ROUTES =================
 app.use("/api/auth", authRoutes);
@@ -72,3 +72,4 @@ io.on("connection", (socket) => {
 server.listen(5000, () => {
   console.log("Server running on port 5000");
 });
+

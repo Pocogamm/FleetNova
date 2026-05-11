@@ -27,6 +27,28 @@ async function ensureRoutesTable() {
   `);
 }
 
+async function updateDeliveryStatus(deliveryId, status) {
+  if (!deliveryId) return;
+
+  await pool.query(
+    `UPDATE deliveries
+     SET status = $1
+     WHERE id = $2`,
+    [status, Number(deliveryId)]
+  );
+}
+
+async function getRouteById(id) {
+  const result = await pool.query(
+    `SELECT *
+     FROM fleet_routes
+     WHERE id = $1`,
+    [Number(id)]
+  );
+
+  return result.rows[0] || null;
+}
+
 router.get("/delivery-options", verifyToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -143,6 +165,15 @@ router.patch("/:id/assign", verifyToken, async (req, res) => {
       return res.status(400).json({ message: "delivery_id, vehicle_id, driver_name are required" });
     }
 
+    const existingRoute = await getRouteById(req.params.id);
+    if (!existingRoute) {
+      return res.status(404).json({ message: "Route not found" });
+    }
+
+    if (existingRoute.delivery_id && String(existingRoute.delivery_id) !== String(delivery_id)) {
+      await updateDeliveryStatus(existingRoute.delivery_id, "pending");
+    }
+
     const result = await pool.query(
       `UPDATE fleet_routes
        SET delivery_id = $1,
@@ -154,9 +185,7 @@ router.patch("/:id/assign", verifyToken, async (req, res) => {
       [String(delivery_id), Number(vehicle_id), driver_name, Number(req.params.id)]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: "Route not found" });
-    }
+    await updateDeliveryStatus(delivery_id, "assigned");
 
     res.json(result.rows[0]);
   } catch (error) {
@@ -181,6 +210,8 @@ router.patch("/:id/start", verifyToken, async (req, res) => {
       return res.status(404).json({ message: "Route not found" });
     }
 
+    await updateDeliveryStatus(result.rows[0].delivery_id, "in_transit");
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error("Route start error:", error);
@@ -198,7 +229,7 @@ router.patch("/:id/progress", verifyToken, async (req, res) => {
     }
 
     const currentRes = await pool.query(
-      `SELECT id, total_distance_km, covered_distance_km
+      `SELECT id, total_distance_km, covered_distance_km, delivery_id
        FROM fleet_routes
        WHERE id = $1`,
       [Number(req.params.id)]
@@ -224,10 +255,39 @@ router.patch("/:id/progress", verifyToken, async (req, res) => {
       [covered, status, Number(req.params.id)]
     );
 
+    await updateDeliveryStatus(route.delivery_id, status);
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error("Route progress error:", error);
     res.status(500).json({ message: "Failed to update route progress" });
+  }
+});
+
+router.delete("/:id", verifyToken, async (req, res) => {
+  try {
+    await ensureRoutesTable();
+
+    const existingRoute = await getRouteById(req.params.id);
+    if (!existingRoute) {
+      return res.status(404).json({ message: "Route not found" });
+    }
+
+    const result = await pool.query(
+      `DELETE FROM fleet_routes
+       WHERE id = $1
+       RETURNING id`,
+      [Number(req.params.id)]
+    );
+
+    if (existingRoute.delivery_id && existingRoute.status !== "delivered") {
+      await updateDeliveryStatus(existingRoute.delivery_id, "pending");
+    }
+
+    res.json({ message: "Route deleted successfully", id: result.rows[0].id });
+  } catch (error) {
+    console.error("Route delete error:", error);
+    res.status(500).json({ message: "Failed to delete route" });
   }
 });
 
